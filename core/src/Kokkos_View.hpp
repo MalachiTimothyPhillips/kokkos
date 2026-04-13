@@ -63,31 +63,28 @@ template <class T1, class T2>
 inline constexpr bool is_always_assignable_v =
     is_always_assignable<T1, T2>::value;
 
+namespace Impl {
+template <class DstView, class SrcView, size_t... I>
+KOKKOS_INLINE_FUNCTION constexpr bool is_assignable_extents_impl(
+    const DstView& dst, const SrcView& src, std::index_sequence<I...>) {
+  return (((DstView::static_extent(I) == 0) ||
+           (dst.static_extent(I) == static_cast<size_t>(src.extent(I)))) &&
+          ...);
+}
+} /* namespace Impl */
+
 template <class... ViewTDst, class... ViewTSrc>
 constexpr bool is_assignable(const Kokkos::View<ViewTDst...>& dst,
                              const Kokkos::View<ViewTSrc...>& src) {
-  using dst_mdspan = typename Kokkos::View<ViewTDst...>::mdspan_type;
-  using src_mdspan = typename Kokkos::View<ViewTSrc...>::mdspan_type;
+  using dst_view   = Kokkos::View<ViewTDst...>;
+  using src_view   = Kokkos::View<ViewTSrc...>;
+  using dst_mdspan = typename dst_view::mdspan_type;
+  using src_mdspan = typename src_view::mdspan_type;
 
-  return is_always_assignable_v<Kokkos::View<ViewTDst...>,
-                                Kokkos::View<ViewTSrc...> > ||
+  return is_always_assignable_v<dst_view, src_view> ||
          (std::is_constructible_v<dst_mdspan, src_mdspan> &&
-          ((dst_mdspan::rank_dynamic() >= 1) ||
-           (dst.static_extent(0) == src.extent(0))) &&
-          ((dst_mdspan::rank_dynamic() >= 2) ||
-           (dst.static_extent(1) == src.extent(1))) &&
-          ((dst_mdspan::rank_dynamic() >= 3) ||
-           (dst.static_extent(2) == src.extent(2))) &&
-          ((dst_mdspan::rank_dynamic() >= 4) ||
-           (dst.static_extent(3) == src.extent(3))) &&
-          ((dst_mdspan::rank_dynamic() >= 5) ||
-           (dst.static_extent(4) == src.extent(4))) &&
-          ((dst_mdspan::rank_dynamic() >= 6) ||
-           (dst.static_extent(5) == src.extent(5))) &&
-          ((dst_mdspan::rank_dynamic() >= 7) ||
-           (dst.static_extent(6) == src.extent(6))) &&
-          ((dst_mdspan::rank_dynamic() == 8) ||
-           (dst.static_extent(7) == src.extent(7))));
+          Kokkos::Impl::is_assignable_extents_impl(
+              dst, src, std::make_index_sequence<dst_view::rank()>{}));
 }
 
 namespace Impl {
@@ -114,6 +111,12 @@ KOKKOS_INLINE_FUNCTION constexpr auto ptr_from_data_handle(
   // This should only be internally invoked in Kokkos with raw pointers.
   static_assert(std::is_pointer_v<HandleType>);
   return handle;
+}
+
+template <class LView, class RView, size_t... I>
+KOKKOS_INLINE_FUNCTION constexpr bool view_equal_extents_impl(
+    const LView& lhs, const RView& rhs, std::index_sequence<I...>) {
+  return ((lhs.extent(I) == rhs.extent(I)) && ...);
 }
 }  // namespace Impl
 
@@ -330,7 +333,7 @@ class View : public Impl::BasicViewFromTraits<DataType, Properties...>::type {
   }
 
   KOKKOS_INLINE_FUNCTION constexpr int extent_int(size_t r) const {
-    return static_cast<int>(base_t::extent(r));
+    return static_cast<int>(extent(r));
   }
   //----------------------------------------
   // Allow specializations to query their specialized map
@@ -1380,19 +1383,11 @@ class View : public Impl::BasicViewFromTraits<DataType, Properties...>::type {
 
   KOKKOS_FUNCTION
   constexpr typename base_t::index_type extent(size_t r) const noexcept {
-    // casting to int to avoid warning for pointless comparison of unsigned
-    // with 0
-    if (static_cast<int>(r) >= static_cast<int>(base_t::extents_type::rank()))
-      return 1;
     return base_t::extent(r);
   }
 
   KOKKOS_FUNCTION
   static constexpr size_t static_extent(size_t r) noexcept {
-    // casting to int to avoid warning for pointless comparison of unsigned
-    // with 0
-    if (static_cast<int>(r) >= static_cast<int>(base_t::extents_type::rank()))
-      return 1;
     size_t value = base_t::extents_type::static_extent(r);
     return value == Kokkos::dynamic_extent ? 0 : value;
   }
@@ -1481,6 +1476,8 @@ KOKKOS_INLINE_FUNCTION bool operator==(const View<LT, LP...>& lhs,
   // Same data, layout, dimensions
   using lhs_traits = ViewTraits<LT, LP...>;
   using rhs_traits = ViewTraits<RT, RP...>;
+  using lhs_view   = View<LT, LP...>;
+  using rhs_view   = View<RT, RP...>;
 
   return std::is_same_v<typename lhs_traits::const_value_type,
                         typename rhs_traits::const_value_type> &&
@@ -1488,12 +1485,10 @@ KOKKOS_INLINE_FUNCTION bool operator==(const View<LT, LP...>& lhs,
                         typename rhs_traits::array_layout> &&
          std::is_same_v<typename lhs_traits::memory_space,
                         typename rhs_traits::memory_space> &&
-         View<LT, LP...>::rank() == View<RT, RP...>::rank() &&
+         lhs_view::rank() == rhs_view::rank() &&
          lhs.data() == rhs.data() && lhs.span() == rhs.span() &&
-         lhs.extent(0) == rhs.extent(0) && lhs.extent(1) == rhs.extent(1) &&
-         lhs.extent(2) == rhs.extent(2) && lhs.extent(3) == rhs.extent(3) &&
-         lhs.extent(4) == rhs.extent(4) && lhs.extent(5) == rhs.extent(5) &&
-         lhs.extent(6) == rhs.extent(6) && lhs.extent(7) == rhs.extent(7);
+         Kokkos::Impl::view_equal_extents_impl(
+             lhs, rhs, std::make_index_sequence<lhs_view::rank()>{});
 }
 
 template <class LT, class... LP, class RT, class... RP>
